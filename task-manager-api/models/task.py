@@ -1,6 +1,11 @@
 from database import db
-from datetime import datetime
-import json
+from datetime import datetime, timezone
+
+VALID_STATUSES = ('pending', 'in_progress', 'done', 'cancelled')
+TERMINAL_STATUSES = ('done', 'cancelled')
+MIN_PRIORITY = 1
+MAX_PRIORITY = 5
+
 
 class Task(db.Model):
     __tablename__ = 'tasks'
@@ -12,49 +17,44 @@ class Task(db.Model):
     priority = db.Column(db.Integer, default=3)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     category_id = db.Column(db.Integer, db.ForeignKey('categories.id'), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     due_date = db.Column(db.DateTime, nullable=True)
     tags = db.Column(db.String(500), nullable=True)
 
     user = db.relationship('User', backref='tasks')
     category = db.relationship('Category', backref='tasks')
 
-    def to_dict(self):
-        data = {}
-        data['id'] = self.id
-        data['title'] = self.title
-        data['description'] = self.description
-        data['status'] = self.status
-        data['priority'] = self.priority
-        data['user_id'] = self.user_id
-        data['category_id'] = self.category_id
-        data['created_at'] = str(self.created_at)
-        data['updated_at'] = str(self.updated_at)
-        data['due_date'] = str(self.due_date) if self.due_date else None
-        data['tags'] = self.tags.split(',') if self.tags else []
+    def to_dict(self, include_overdue=True):
+        data = {
+            'id': self.id,
+            'title': self.title,
+            'description': self.description,
+            'status': self.status,
+            'priority': self.priority,
+            'user_id': self.user_id,
+            'category_id': self.category_id,
+            'created_at': str(self.created_at),
+            'updated_at': str(self.updated_at),
+            'due_date': str(self.due_date) if self.due_date else None,
+            'tags': self.tags.split(',') if self.tags else [],
+        }
+        if include_overdue:
+            data['overdue'] = self.is_overdue()
         return data
 
-    def validate_status(self, new_status):
-        valid = ['pending', 'in_progress', 'done', 'cancelled']
-        if new_status in valid:
-            return True
-        else:
-            return False
+    @staticmethod
+    def validate_status(status):
+        return status in VALID_STATUSES
 
-    def validate_priority(self, p):
-        if p >= 1 and p <= 5:
-            return True
-        return False
+    @staticmethod
+    def validate_priority(priority):
+        return MIN_PRIORITY <= priority <= MAX_PRIORITY
 
     def is_overdue(self):
-        if self.due_date:
-            if self.due_date < datetime.utcnow():
-                if self.status != 'done' and self.status != 'cancelled':
-                    return True
-                else:
-                    return False
-            else:
-                return False
-        else:
+        if not self.due_date:
             return False
+        due_date = self.due_date
+        if due_date.tzinfo is None:
+            due_date = due_date.replace(tzinfo=timezone.utc)
+        return due_date < datetime.now(timezone.utc) and self.status not in TERMINAL_STATUSES
