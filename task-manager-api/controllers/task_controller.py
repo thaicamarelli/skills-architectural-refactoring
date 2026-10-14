@@ -1,178 +1,156 @@
 import logging
 
-from sqlalchemy.orm import joinedload
-
 from database import db
-from datetime import datetime, timezone
+from errors import ErroDeValidacao, NaoEncontrado
+from models.category import Category
 from models.task import Task
 from models.user import User
-from models.category import Category
-from services.notification_service import notification_service
 from utils.helpers import process_task_data
 
 logger = logging.getLogger(__name__)
 
 
-def _task_with_relations_dict(task):
-    data = task.to_dict()
-    data['user_name'] = task.user.name if task.user else None
-    data['category_name'] = task.category.name if task.category else None
-    return data
+class TaskController:
+    def __init__(self, notification_service=None):
+        self.notification_service = notification_service
 
+    def listar(self):
+        """Corrige a Query N+1 do relatório original: busca users/categories em lote
+        (não um SELECT por task) em vez de deixar cada `to_dict` disparar uma query."""
+        tasks = Task.query.all()
 
-def list_tasks():
-    tasks = Task.query.options(
-        joinedload(Task.user), joinedload(Task.category)
-    ).all()
-    return [_task_with_relations_dict(task) for task in tasks], 200
+        user_ids = {t.user_id for t in tasks if t.user_id}
+        category_ids = {t.category_id for t in tasks if t.category_id}
+        users_by_id = {u.id: u for u in User.query.filter(User.id.in_(user_ids)).all()} if user_ids else {}
+        categories_by_id = (
+            {c.id: c for c in Category.query.filter(Category.id.in_(category_ids)).all()} if category_ids else {}
+        )
 
+        result = []
+        for t in tasks:
+            data = t.to_dict()
+            data['user_name'] = users_by_id[t.user_id].name if t.user_id in users_by_id else None
+            data['category_name'] = categories_by_id[t.category_id].name if t.category_id in categories_by_id else None
+            result.append(data)
+        return result
 
-def get_task(task_id):
-    task = db.session.get(Task, task_id)
-    if not task:
-        return {'error': 'Task não encontrada'}, 404
-    return task.to_dict(), 200
+    def buscar_por_id(self, task_id):
+        task = db.session.get(Task, task_id)
+        if not task:
+            raise NaoEncontrado('Task não encontrada')
+        return task.to_dict()
 
+    def buscar(self, termo='', status='', priority='', user_id=''):
+        tasks = Task.query
 
-def create_task(data):
-    if not data:
-        return {'error': 'Dados inválidos'}, 400
+        if termo:
+            tasks = tasks.filter(db.or_(Task.title.like(f'%{termo}%'), Task.description.like(f'%{termo}%')))
+        if status:
+            tasks = tasks.filter(Task.status == status)
+        if priority:
+            tasks = tasks.filter(Task.priority == int(priority))
+        if user_id:
+            tasks = tasks.filter(Task.user_id == int(user_id))
 
-    title = data.get('title')
-    if not title:
-        return {'error': 'Título é obrigatório'}, 400
+        return [t.to_dict() for t in tasks.all()]
 
-    fields, error = process_task_data(data)
-    if error:
-        return {'error': error}, 400
+    def criar(self, data):
+        if not data:
+            raise ErroDeValidacao('Dados inválidos')
+        if not data.get('title'):
+            raise ErroDeValidacao('Título é obrigatório')
 
-    user_id = data.get('user_id')
-    if user_id and not db.session.get(User, user_id):
-        return {'error': 'Usuário não encontrado'}, 404
+        campos, erro = process_task_data(data)
+        if erro:
+            raise ErroDeValidacao(erro)
 
-    category_id = data.get('category_id')
-    if category_id and not db.session.get(Category, category_id):
-        return {'error': 'Categoria não encontrada'}, 404
+        user = None
+        if data.get('user_id'):
+            user = db.session.get(User, data['user_id'])
+            if not user:
+                raise NaoEncontrado('Usuário não encontrado')
 
-    task = Task(
-        title=fields['title'],
-        description=fields.get('description', data.get('description', '')),
-        status=fields.get('status', data.get('status', 'pending')),
-        priority=fields.get('priority', data.get('priority', 3)),
-        user_id=user_id,
-        category_id=category_id,
-        due_date=fields.get('due_date'),
-        tags=fields.get('tags'),
-    )
+        if data.get('category_id') and not db.session.get(Category, data['category_id']):
+            raise NaoEncontrado('Categoria não encontrada')
 
-    try:
+        task = Task()
+        task.title = campos['title']
+        task.description = campos.get('description', data.get('description', ''))
+        task.status = campos.get('status', 'pending')
+        task.priority = campos.get('priority', data.get('priority', 3))
+        task.user_id = data.get('user_id')
+        task.category_id = data.get('category_id')
+        task.due_date = campos.get('due_date')
+        if 'tags' in campos:
+            task.tags = campos['tags']
+
         db.session.add(task)
         db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        logger.exception('Erro ao criar task: %s', e)
-        return {'error': 'Erro ao criar task'}, 500
+        logger.info('task.criada id=%s titulo=%s', task.id, task.title)
 
-    logger.info('Task criada: %s - %s', task.id, task.title)
+        if user and self.notification_service:
+            self.notification_service.notify_task_assigned(user, task)
 
-    if task.user_id:
-        user = db.session.get(User, task.user_id)
-        if user:
-            notification_service.notify_task_assigned(user, task)
+        return task.to_dict(), 201
 
-    return task.to_dict(), 201
+    def atualizar(self, task_id, data):
+        task = db.session.get(Task, task_id)
+        if not task:
+            raise NaoEncontrado('Task não encontrada')
+        if not data:
+            raise ErroDeValidacao('Dados inválidos')
 
+        campos, erro = process_task_data(data, existing_task=task)
+        if erro:
+            raise ErroDeValidacao(erro)
 
-def update_task(task_id, data):
-    task = db.session.get(Task, task_id)
-    if not task:
-        return {'error': 'Task não encontrada'}, 404
+        if 'user_id' in data:
+            if data['user_id'] and not db.session.get(User, data['user_id']):
+                raise NaoEncontrado('Usuário não encontrado')
+            task.user_id = data['user_id']
 
-    if not data:
-        return {'error': 'Dados inválidos'}, 400
+        if 'category_id' in data:
+            if data['category_id'] and not db.session.get(Category, data['category_id']):
+                raise NaoEncontrado('Categoria não encontrada')
+            task.category_id = data['category_id']
 
-    fields, error = process_task_data(data)
-    if error:
-        return {'error': error}, 400
+        for campo in ('title', 'description', 'status', 'priority'):
+            if campo in campos:
+                setattr(task, campo, campos[campo])
+        if 'due_date' in campos:
+            task.due_date = campos['due_date']
+        if 'tags' in campos:
+            task.tags = campos['tags']
 
-    if 'user_id' in data:
-        if data['user_id'] and not db.session.get(User, data['user_id']):
-            return {'error': 'Usuário não encontrado'}, 404
-        task.user_id = data['user_id']
-
-    if 'category_id' in data:
-        if data['category_id'] and not db.session.get(Category, data['category_id']):
-            return {'error': 'Categoria não encontrada'}, 404
-        task.category_id = data['category_id']
-
-    for field in ('title', 'description', 'status', 'priority', 'due_date', 'tags'):
-        if field in fields:
-            setattr(task, field, fields[field])
-
-    task.updated_at = datetime.now(timezone.utc)
-
-    try:
         db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        logger.exception('Erro ao atualizar task %s: %s', task_id, e)
-        return {'error': 'Erro ao atualizar'}, 500
+        logger.info('task.atualizada id=%s', task.id)
+        return task.to_dict()
 
-    logger.info('Task atualizada: %s', task.id)
-    return task.to_dict(), 200
+    def deletar(self, task_id):
+        task = db.session.get(Task, task_id)
+        if not task:
+            raise NaoEncontrado('Task não encontrada')
 
-
-def delete_task(task_id):
-    task = db.session.get(Task, task_id)
-    if not task:
-        return {'error': 'Task não encontrada'}, 404
-
-    try:
         db.session.delete(task)
         db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        logger.exception('Erro ao deletar task %s: %s', task_id, e)
-        return {'error': 'Erro ao deletar'}, 500
+        logger.info('task.deletada id=%s', task_id)
+        return {'message': 'Task deletada com sucesso'}
 
-    logger.info('Task deletada: %s', task_id)
-    return {'message': 'Task deletada com sucesso'}, 200
+    def estatisticas(self):
+        total = Task.query.count()
+        pending = Task.query.filter_by(status='pending').count()
+        in_progress = Task.query.filter_by(status='in_progress').count()
+        done = Task.query.filter_by(status='done').count()
+        cancelled = Task.query.filter_by(status='cancelled').count()
 
+        overdue_count = sum(1 for t in Task.query.all() if t.is_overdue())
 
-def search_tasks(query, status, priority, user_id):
-    tasks = Task.query.options(joinedload(Task.user), joinedload(Task.category))
-
-    if query:
-        tasks = tasks.filter(
-            db.or_(Task.title.like(f'%{query}%'), Task.description.like(f'%{query}%'))
-        )
-    if status:
-        tasks = tasks.filter(Task.status == status)
-    if priority:
-        tasks = tasks.filter(Task.priority == int(priority))
-    if user_id:
-        tasks = tasks.filter(Task.user_id == int(user_id))
-
-    results = tasks.all()
-    return [task.to_dict() for task in results], 200
-
-
-def task_stats():
-    total = Task.query.count()
-    pending = Task.query.filter_by(status='pending').count()
-    in_progress = Task.query.filter_by(status='in_progress').count()
-    done = Task.query.filter_by(status='done').count()
-    cancelled = Task.query.filter_by(status='cancelled').count()
-
-    overdue_count = sum(1 for task in Task.query.all() if task.is_overdue())
-
-    stats = {
-        'total': total,
-        'pending': pending,
-        'in_progress': in_progress,
-        'done': done,
-        'cancelled': cancelled,
-        'overdue': overdue_count,
-        'completion_rate': round((done / total) * 100, 2) if total > 0 else 0,
-    }
-    return stats, 200
+        return {
+            'total': total,
+            'pending': pending,
+            'in_progress': in_progress,
+            'done': done,
+            'cancelled': cancelled,
+            'overdue': overdue_count,
+            'completion_rate': round((done / total) * 100, 2) if total > 0 else 0,
+        }

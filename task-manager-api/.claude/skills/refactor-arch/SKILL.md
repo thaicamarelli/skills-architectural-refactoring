@@ -123,7 +123,17 @@ Só execute após a confirmação da Fase 2.
    camadas existentes em vez de recriá-las.
 3. Aplique as transformações do playbook, endereçando os findings do relatório por ordem de
    severidade. Passos que quase sempre se aplicam:
-   - Extrair configuração/segredos para um módulo de config (nada hardcoded; ler de env).
+   - Extrair configuração/segredos para um módulo de config lido de env, seguindo o T1 **à
+     risca, sem exceção**: nenhum segredo obrigatório (SECRET_KEY, senha de banco, chave de
+     API/SMTP) pode ter um valor fixo como fallback — nem literal (`SECRET_KEY = "..."`) nem
+     escondido dentro de um default de leitura de env (`os.environ.get("SECRET_KEY", "algo-fixo")`,
+     `process.env.X || "algo-fixo"`). Se a variável estiver ausente **fora do modo de
+     desenvolvimento**, o boot deve **falhar** com uma mensagem clara — nunca cair
+     silenciosamente em um valor fixo. Em desenvolvimento (`DEBUG`/`NODE_ENV=development`), pode
+     gerar uma chave efêmera em runtime, mas isso não substitui a falha de boot fora desse modo.
+     Esse padrão vale igualmente em **todo** projeto Python/Node auditado por esta skill — se um
+     projeto já tem outro projeto-irmão refatorado por esta mesma skill, o resultado aqui deve
+     seguir exatamente o mesmo padrão, não uma versão mais frouxa.
    - Criar **Models** que encapsulam acesso a dados (com queries parametrizadas — fim do SQL
      Injection) e a lógica de domínio.
    - Separar **Views/Routes** (só HTTP: rota, request, response) dos **Controllers** (orquestram
@@ -136,6 +146,11 @@ Só execute após a confirmação da Fase 2.
      `npm start`).
    - Os **endpoints originais continuam respondendo** (dispare algumas requisições
      representativas; use o `.http` do projeto se existir, ou `curl`).
+   - **Confirme o boot-fail de segredos, não apenas assuma.** Para cada segredo obrigatório
+     extraído no passo anterior, rode o boot **sem** a variável de ambiente correspondente
+     (fora do modo de desenvolvimento) e confirme que ele falha com erro claro — não vale
+     inspecionar o código e assumir que "já lê de env" é suficiente; um `os.environ.get(...,
+     "default")` também lê de env e ainda seria um bug se o default for um segredo funcional.
    - Idealmente, **zero anti-patterns** do relatório permanecem. Se algum não pôde ser
      removido, diga qual e por quê.
 5. Imprima o resumo final **neste formato**:

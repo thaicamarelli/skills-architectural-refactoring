@@ -1,6 +1,9 @@
+from werkzeug.security import check_password_hash, generate_password_hash
+
 from database import db
-from datetime import datetime, timezone
-from werkzeug.security import generate_password_hash, check_password_hash
+from utils.helpers import agora_utc
+
+VALID_ROLES = ['user', 'admin', 'manager']
 
 
 class User(db.Model):
@@ -12,7 +15,7 @@ class User(db.Model):
     password = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(50), default='user')
     active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = db.Column(db.DateTime, default=agora_utc)
 
     def to_dict(self):
         return {
@@ -21,7 +24,7 @@ class User(db.Model):
             'email': self.email,
             'role': self.role,
             'active': self.active,
-            'created_at': str(self.created_at),
+            'created_at': str(self.created_at)
         }
 
     def set_password(self, pwd):

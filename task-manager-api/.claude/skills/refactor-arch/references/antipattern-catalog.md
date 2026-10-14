@@ -28,8 +28,14 @@ Regra de ouro: se um único achado combina vários problemas (ex.: um arquivo qu
 **Detecção:** literais de senha, chave ou token no código — `SECRET_KEY = "..."`, `dbPass`,
 `paymentGatewayKey = "pk_live_..."`, `email_password = "..."`, strings como `"senha123"`,
 `"admin123"`. Também segredos expostos em respostas de API (ex.: um `/health` que devolve a
-`secret_key`).
-**Por quê:** vaza para o versionamento e para clientes; qualquer um com o repo tem produção.
+`secret_key`). **Conta igualmente** um valor fixo escondido como *fallback* de leitura de env —
+`os.environ.get("SECRET_KEY", "dev-secret-key-change-me")`, `process.env.DB_PASS || "senha123"` —
+mesmo parecendo "já lê de env": se a variável faltar, o valor default entra em produção do mesmo
+jeito que um literal direto. Só é aceitável um default vazio/gerado em runtime quando o próprio
+boot falha na ausência do segredo fora do modo de desenvolvimento (ver T1 no playbook).
+**Por quê:** vaza para o versionamento e para clientes; qualquer um com o repo tem produção. Um
+fallback disfarçado é mais perigoso que o literal óbvio porque passa despercebido numa revisão
+rápida do tipo "ok, isso já lê de env".
 **Severidade:** CRITICAL.
 
 ### C2. SQL Injection (query montada por concatenação)

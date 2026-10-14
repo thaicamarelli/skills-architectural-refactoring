@@ -1,10 +1,12 @@
 from database import db
-from datetime import datetime, timezone
+from utils.helpers import agora_utc
 
-VALID_STATUSES = ('pending', 'in_progress', 'done', 'cancelled')
-TERMINAL_STATUSES = ('done', 'cancelled')
+VALID_STATUSES = ['pending', 'in_progress', 'done', 'cancelled']
+MIN_TITLE_LENGTH = 3
+MAX_TITLE_LENGTH = 200
 MIN_PRIORITY = 1
 MAX_PRIORITY = 5
+DEFAULT_PRIORITY = 3
 
 
 class Task(db.Model):
@@ -14,11 +16,11 @@ class Task(db.Model):
     title = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(50), default='pending')
-    priority = db.Column(db.Integer, default=3)
+    priority = db.Column(db.Integer, default=DEFAULT_PRIORITY)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     category_id = db.Column(db.Integer, db.ForeignKey('categories.id'), nullable=True)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = db.Column(db.DateTime, default=agora_utc)
+    updated_at = db.Column(db.DateTime, default=agora_utc, onupdate=agora_utc)
     due_date = db.Column(db.DateTime, nullable=True)
     tags = db.Column(db.String(500), nullable=True)
 
@@ -43,18 +45,15 @@ class Task(db.Model):
             data['overdue'] = self.is_overdue()
         return data
 
-    @staticmethod
-    def validate_status(status):
-        return status in VALID_STATUSES
+    def validate_status(self, new_status):
+        return new_status in VALID_STATUSES
 
-    @staticmethod
-    def validate_priority(priority):
-        return MIN_PRIORITY <= priority <= MAX_PRIORITY
+    def validate_priority(self, p):
+        return MIN_PRIORITY <= p <= MAX_PRIORITY
 
     def is_overdue(self):
         if not self.due_date:
             return False
-        due_date = self.due_date
-        if due_date.tzinfo is None:
-            due_date = due_date.replace(tzinfo=timezone.utc)
-        return due_date < datetime.now(timezone.utc) and self.status not in TERMINAL_STATUSES
+        if self.due_date >= agora_utc():
+            return False
+        return self.status not in ('done', 'cancelled')

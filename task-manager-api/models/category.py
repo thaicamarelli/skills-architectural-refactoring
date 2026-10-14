@@ -1,5 +1,7 @@
 from database import db
-from datetime import datetime, timezone
+from utils.helpers import agora_utc
+
+DEFAULT_COLOR = '#000000'
 
 
 class Category(db.Model):
@@ -8,8 +10,8 @@ class Category(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.String(300), nullable=True)
-    color = db.Column(db.String(7), default='#000000')
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    color = db.Column(db.String(7), default=DEFAULT_COLOR)
+    created_at = db.Column(db.DateTime, default=agora_utc)
 
     def to_dict(self):
         return {
